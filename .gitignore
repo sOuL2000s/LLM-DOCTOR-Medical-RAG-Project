@@ -1,0 +1,24 @@
+# Virtual environments
+env/
+venv/
+llm/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Vector DB / generated data
+vectorstore/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Secrets
+.env
+combined_project_files.txt

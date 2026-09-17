@@ -1,0 +1,25 @@
+===========================================
+      LLM DOCTOR RAG EVALUATION REPORT      
+===========================================
+
+Total Samples Evaluated: 63
+-------------------------------------------
+Average Token F1 Score:  0.2305
+Average BERTScore:       0.8135
+
+--- Ragas Metrics (High Level) ---
+faithfulness        : 0.6952
+answer_relevancy    : 0.6745
+
+===========================================
+   PERFORMANCE HIGHLIGHTS (BERTScore)
+===========================================
+1. Question: What are the symptoms of Tetanus?
+   Score: 0.9259
+
+2. Question: What are Calcium Channel Blockers?
+   Score: 0.9203
+
+3. Question: What characterizes Urticaria (Hives)?
+   Score: 0.9074
+
