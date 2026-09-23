@@ -1,0 +1,42 @@
+# LLM Doctor - Evaluation Configuration (Section 5.1 of the paper)
+#
+# This file documents the exact hyperparameters used for reproducibility.
+# Change values here and update app/config/config.py to match before
+# running evaluator.py.
+
+hardware:
+  gpu: "NVIDIA RTX A5000 (24 GB VRAM)"
+  cpu: "Intel Xeon Silver 4310"
+  ram: "64 GB"
+  inference_backend: "Groq LPU API (for Model 4 LLM)"
+
+software:
+  python: "3.10.12"
+  langchain: "0.3.27"
+  langchain_community: "0.3.31"
+  faiss_cpu: "1.8.0"
+  sentence_transformers: "2.7.0"
+  transformers: "4.41.0"
+  ragas: "0.1.9"
+  bert_score: "0.3.13"
+
+retrieval:
+  chunk_size: 500
+  chunk_overlap: 50
+  faiss_index: "IndexFlatL2"
+  initial_k_model4: 5
+  initial_k_model3: 10
+  reranker_top_n: 2
+
+generation:
+  temperature: 0.2
+  top_p: 0.9
+  max_tokens: 500
+  answer_style_default: "concise"
+
+evaluation:
+  primary_set_size: 200
+  real_world_set_size: 30
+  expert_review_size: 50
+  ragas_judge: "gpt-4o-mini"
+  bertscore_model: "distilbert-base-uncased"

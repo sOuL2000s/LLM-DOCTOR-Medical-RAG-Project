@@ -1,3 +1,17 @@
+"""
+LLM Doctor - Main Evaluator
+
+Runs the full evaluation pipeline and produces:
+  - evaluation_details.csv                (per-sample results for Model 4)
+  - evaluation_summary.txt                (human-readable summary)
+  - full_evaluation_plots.png             (metric distributions for Model 4)
+  - multi_model_comparison_details.csv    (per-sample results for all configs)
+  - multi_model_comparison_summary.csv    (summary table for all configs)
+  - model_comparison_chart.png            (bar chart for all configs)
+  - hallucination_analysis.csv            (Model 4 hallucination breakdown)
+  - paper_tables.tex                      (LaTeX snippets for the paper)
+"""
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,210 +25,174 @@ from bert_score import score as bert_score_func
 import transformers
 import warnings
 
-# Suppress technical noise
 transformers.logging.set_verbosity_error()
 warnings.filterwarnings("ignore")
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy
 from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
 
-from app.components.retriever import create_qa_chain
+from app.components.retriever import create_qa_chain, create_non_rag_chain
 from app.components.llm import load_llm
 from app.components.embeddings import get_embedding_model
+from app.config.config import MODEL_COMBINATIONS
+from test_questions import PRIMARY_SET
 
-# [List truncated for brevity - keep your existing test_questions here]
-test_questions = [
-    {"question": "What is normal body temperature?", "ground_truth": "Normal body temperature averages 37°C (98.6°F). It varies slightly with time of day, activity, and age, but remains tightly regulated by hypothalamic control."},
-    {"question": "What is blood pressure?", "ground_truth": "Blood pressure is the force exerted by circulating blood on arterial walls, expressed as systolic over diastolic pressure, reflecting cardiac output and vascular resistance."},
-    {"question": "What is hypertension?", "ground_truth": "Hypertension is a chronic condition where blood pressure persistently exceeds 140/90 mmHg, increasing risk of heart disease, stroke, kidney damage, and other complications."},
-    {"question": "What is hemoglobin?", "ground_truth": "Hemoglobin is an iron-containing protein in red blood cells responsible for transporting oxygen from lungs to tissues and returning carbon dioxide to lungs."},
-    {"question": "What is anemia?", "ground_truth": "Anemia is a condition characterized by reduced hemoglobin or red blood cells, leading to decreased oxygen delivery, causing fatigue, weakness, pallor, and shortness of breath."},
-    {"question": "What is heart rate?", "ground_truth": "Heart rate is the number of heartbeats per minute. Normal resting rate in adults ranges from 60 to 100 beats per minute."},
-    {"question": "What is myocardial infarction?", "ground_truth": "Myocardial infarction occurs when blood flow to heart muscle is blocked, causing tissue death due to oxygen deprivation, commonly known as a heart attack."},
-    {"question": "What is angina pectoris?", "ground_truth": "Angina is chest discomfort caused by reduced blood supply to heart muscle, often triggered by exertion or stress, relieved by rest or medication."},
-    {"question": "What is atherosclerosis?", "ground_truth": "Atherosclerosis is buildup of fatty plaques in arteries, narrowing them and reducing blood flow, increasing risk of heart attack, stroke, and peripheral vascular disease."},
-    {"question": "What is respiration?", "ground_truth": "Respiration is the process of inhaling oxygen and exhaling carbon dioxide, involving lungs and blood circulation to maintain cellular metabolism and energy production."},
-    {"question": "What is asthma?", "ground_truth": "Asthma is a chronic inflammatory disease of airways causing reversible narrowing, leading to wheezing, breathlessness, chest tightness, and coughing, especially at night or early morning."},
-    {"question": "What is pneumonia?", "ground_truth": "Pneumonia is infection of lung tissue causing inflammation of alveoli, often filled with fluid or pus, resulting in fever, cough, difficulty breathing, and chest pain."},
-    {"question": "What is hypoxia?", "ground_truth": "Hypoxia is a condition where body tissues receive insufficient oxygen, leading to cellular dysfunction and potential organ damage if prolonged or severe."},
-    {"question": "What is digestion?", "ground_truth": "Digestion is the process of breaking down food into smaller molecules for absorption and use by the body, involving mechanical and chemical processes."},
-    {"question": "What is gastritis?", "ground_truth": "Gastritis is inflammation of stomach lining caused by infection, stress, alcohol, or drugs, leading to pain, nausea, vomiting, and possible bleeding."},
-    {"question": "What is jaundice?", "ground_truth": "Jaundice is yellow discoloration of skin and eyes due to increased bilirubin levels, often caused by liver disease, bile duct obstruction, or hemolysis."},
-    {"question": "What is diarrhea?", "ground_truth": "Diarrhea is frequent passage of loose or watery stools, commonly due to infection, food intolerance, or gastrointestinal disorders, leading to dehydration and electrolyte imbalance."},
-    {"question": "What is constipation?", "ground_truth": "Constipation is infrequent or difficult bowel movements, often caused by low fiber intake, dehydration, or reduced physical activity, leading to discomfort and straining."},
-    {"question": "What is neuron?", "ground_truth": "Neuron is the basic functional unit of nervous system responsible for transmitting electrical and chemical signals between different parts of body."},
-    {"question": "What is stroke?", "ground_truth": "Stroke occurs when blood supply to part of brain is interrupted or reduced, causing brain cell death and leading to neurological deficits like paralysis or speech loss."},
-    {"question": "What is epilepsy?", "ground_truth": "Epilepsy is a neurological disorder characterized by recurrent seizures due to abnormal electrical activity in brain, affecting consciousness, movement, or behavior."},
-    {"question": "What is reflex action?", "ground_truth": "Reflex action is an automatic, rapid response to a stimulus without conscious control, mediated through spinal cord pathways for protection and quick reaction."},
-    {"question": "What is coma?", "ground_truth": "Coma is a prolonged state of unconsciousness where a person cannot be awakened and does not respond to stimuli due to severe brain dysfunction."},
-    {"question": "What is hormone?", "ground_truth": "Hormones are chemical messengers secreted by endocrine glands that regulate body functions such as growth, metabolism, reproduction, and homeostasis."},
-    {"question": "What is diabetes mellitus?", "ground_truth": "Diabetes mellitus is a metabolic disorder characterized by high blood glucose levels due to insufficient insulin production or impaired insulin action."},
-    {"question": "What is insulin?", "ground_truth": "Insulin is a hormone produced by pancreas that regulates blood glucose by facilitating uptake of glucose into cells for energy and storage."},
-    {"question": "What is hyperthyroidism?", "ground_truth": "Hyperthyroidism is condition where thyroid gland produces excess hormones, increasing metabolism, causing weight loss, rapid heartbeat, nervousness, and heat intolerance."},
-    {"question": "What is hypothyroidism?", "ground_truth": "Hypothyroidism is condition of reduced thyroid hormone production, leading to slowed metabolism, fatigue, weight gain, cold intolerance, and depression."},
-    {"question": "What is infection?", "ground_truth": "Infection occurs when microorganisms like bacteria, viruses, or fungi invade body tissues, multiply, and cause disease by damaging cells or triggering immune responses."},
-    {"question": "What is immunity?", "ground_truth": "Immunity is the body’s ability to resist infections through defense mechanisms including physical barriers, immune cells, and antibodies that recognize and eliminate pathogens."},
-    {"question": "What is vaccination?", "ground_truth": "Vaccination is the process of administering weakened or inactive pathogens to stimulate immune response, providing protection against specific infectious diseases."},
-    {"question": "What is antibiotic?", "ground_truth": "Antibiotics are drugs used to treat bacterial infections by killing bacteria or inhibiting their growth, but they are ineffective against viral infections."},
-    {"question": "What is virus?", "ground_truth": "Virus is a microscopic infectious agent that requires host cells to replicate, causing diseases by invading cells and disrupting their normal functions."},
-    {"question": "What is dehydration?", "ground_truth": "Dehydration is a condition resulting from excessive loss of body fluids, leading to imbalance in electrolytes and impaired physiological functions."},
-    {"question": "What is electrolyte?", "ground_truth": "Electrolytes are charged minerals like sodium and potassium that regulate nerve function, muscle contraction, hydration, and acid-base balance in body."},
-    {"question": "What is edema?", "ground_truth": "Edema is swelling caused by accumulation of excess fluid in tissues, commonly seen in conditions like heart failure, kidney disease, or inflammation."},
-    {"question": "What is acidosis?", "ground_truth": "Acidosis is a condition where blood pH falls below normal due to excess acid or loss of bicarbonate, affecting enzyme activity and organ function."},
-    {"question": "What is alkalosis?", "ground_truth": "Alkalosis is a condition where blood pH rises above normal due to loss of acid or excess bicarbonate, affecting normal cellular processes."},
-    {"question": "What is diagnosis?", "ground_truth": "Diagnosis is the process of identifying a disease by evaluating symptoms, medical history, physical examination, and laboratory or imaging investigations."},
-    {"question": "What is prognosis?", "ground_truth": "Prognosis refers to the expected outcome or course of a disease, including chances of recovery, complications, and survival based on clinical evaluation."},
-    {"question": "What is treatment?", "ground_truth": "Treatment is the management of disease through medications, surgery, lifestyle changes, or therapies aimed at curing, controlling, or relieving symptoms."},
-    {"question": "What is pathology?", "ground_truth": "Pathology is the study of diseases, including their causes, development, structural changes, and effects on body tissues and organs."},
-    {"question": "What is inflammation?", "ground_truth": "Inflammation is a protective response of body to injury or infection, characterized by redness, swelling, heat, pain, and loss of function."},
-    {"question": "What is metabolism?", "ground_truth": "Metabolism includes all chemical reactions in body that maintain life, including processes of breaking down nutrients and producing energy for cellular activities."},
-    {"question": "What is homeostasis?", "ground_truth": "Homeostasis is the ability of body to maintain stable internal environment despite external changes, regulating temperature, pH, fluids, and other vital parameters."},
-    {"question": "What is oxygen saturation?", "ground_truth": "Oxygen saturation is the percentage of hemoglobin carrying oxygen in blood, normally between 95% and 100%, indicating adequate oxygenation of tissues."},
-    {"question": "What is pulse?", "ground_truth": "Pulse is rhythmic expansion of arteries due to heartbeats, used clinically to assess heart rate, rhythm, and strength of blood circulation."},
-    {"question": "What is organ failure?", "ground_truth": "Organ failure occurs when an organ loses its ability to function properly, often due to disease, injury, or insufficient blood supply."},
-    {"question": "What is infection control?", "ground_truth": "Infection control involves measures like hygiene, sterilization, and isolation to prevent spread of infections in healthcare and community settings."},
-    {"question": "What is public health?", "ground_truth": "Public health focuses on prevention of disease, promotion of health, and prolonging life through organized community efforts, policies, education, and healthcare services."},
-    {"question": "What is Cardiac Tamponade?", "ground_truth": "Life-threatening disorder occurring when pericardial fluid accumulates under pressure; effusions rapidly increasing in size may cause an elevated intrapericardial pressure."},
-    {"question": "What defines Cor Pulmonale?", "ground_truth": "Heart failure resulting from pulmonary disease. Most commonly due to COPD; other causes include pulmonary fibrosis, pneumoconioses, recurrent pulmonary emboli..."},
-    {"question": "What is Celiac Disease?", "ground_truth": "Celiac disease is a disease of the digestive system that damages the small intestine and interferes with the absorption of nutrients from food. It occurs when the body reacts abnormally to gluten."},
-    {"question": "What are the symptoms of Tetanus?", "ground_truth": "Jaw stiffness followed by spasms (trismus). Stiffness of neck or other muscles, dysphagia, irritability, hyperreflexia; late, painful convulsions precipitated by minimal stimuli."},
-    {"question": "What is Dilated Cardiomyopathy?", "ground_truth": "A cause of systolic dysfunction, this represents a group of disorders that lead to congestive heart failure. Symptoms and signs of congestive heart failure: Exertional dyspnea, cough, fatigue, paroxysmal nocturnal dyspnea..."},
-    {"question": "What defines Atrial Septal Defect?", "ground_truth": "Patients with small defects are usually asymptomatic and have a normal life span. Large shunts symptomatic by age 40, including exertional dyspnea, fatigue, and palpitations."},
-    {"question": "What is Candidiasis?", "ground_truth": "Candidiasis is an infection caused by a species of the yeast Candida, usually Candida albicans. This is a common cause of vaginal infections in women."},
-    {"question": "What are the symptoms of Tuberculosis?", "ground_truth": "Symptoms progressive and include cough, dyspnea, fever, night sweats, weight loss, and hemoptysis. In primary infection, mid-lung field infiltrates with regional lymphadenopathy; pleural effusion common."},
-    {"question": "What are Calcium Channel Blockers?", "ground_truth": "Calcium channel blockers are medicines that slow the movement of calcium into the cells of the heart and blood vessels. This, in turn, relaxes blood vessels, increases the supply of oxygen-rich blood to the heart, and reduces the heart's workload."},
-    {"question": "What is Carbon Monoxide Poisoning?", "ground_truth": "Carbon monoxide (CO) poisoning occurs when carbon monoxide gas is inhaled. CO is a colorless, odorless, highly poisonous gas that is produced by incomplete combustion."},
-    {"question": "What characterizes Tinea Versicolor?", "ground_truth": "Finely scaling patches on upper trunk and upper arms, usually asymptomatic. Lesions yellowish or brownish on pale skin, or hypopigmented on dark skin."},
-    {"question": "What characterizes Urticaria (Hives)?", "ground_truth": "Pale or red, evanescent, edematous papules or plaques surrounded by red halo with severe itching or stinging; wheals appear suddenly and resolve in hours."},
-    {"question": "What characterizes Vitiligo?", "ground_truth": "Depigmented white patches surrounded by a normal, hyperpigmented, or occasionally inflamed border. Hairs in affected area usually turn white."}
-]
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
 
 def calculate_token_f1(prediction, ground_truth):
     pred_tokens = prediction.lower().split()
     gt_tokens = ground_truth.lower().split()
     common = set(pred_tokens) & set(gt_tokens)
-    if not common: return 0.0
+    if not common:
+        return 0.0
     prec = len(common) / len(pred_tokens) if pred_tokens else 0.0
     rec = len(common) / len(gt_tokens) if gt_tokens else 0.0
     f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
     return f1
 
+
 def get_safe_ragas_scores(rag_results):
-    """Safe extraction for Ragas 0.4.x results to handle varying API changes."""
     try:
         if hasattr(rag_results, "scores") and isinstance(rag_results.scores, dict):
             return rag_results.scores
         elif hasattr(rag_results, "to_pandas"):
-            # If scores is a list of rows, the average is the mean of the dataframe
             return rag_results.to_pandas().mean(numeric_only=True).to_dict()
     except Exception:
         pass
-    # Final fallback: return empty or try to force cast
     return getattr(rag_results, "scores", {})
 
-from app.config.config import MODEL_COMBINATIONS
-from sentence_transformers import CrossEncoder
 
-def run_evaluation_for_config(config_name):
+# =============================================================================
+# SINGLE-CONFIG EVALUATION
+# =============================================================================
+
+def run_evaluation_for_config(config_name, question_set):
     print(f"\n>>> EVALUATING CONFIGURATION: {config_name} <<<")
     config = MODEL_COMBINATIONS[config_name]
-    qa_chain = create_qa_chain(config_name)
+
+    if config_name == "Non_RAG_Baseline":
+        qa_chain = create_non_rag_chain(config_name)
+    else:
+        qa_chain = create_qa_chain(config_name)
+
     if qa_chain is None:
-        raise RuntimeError(f"QA Chain for '{config_name}' could not be initialized. Please ensure your vector stores are generated via 'python -m app.components.data_loader' and check your .env for a valid GROQ_API_KEY.")
-    
-    # Reranker is now integrated into the qa_chain's retriever when config['rerank'] is True
-    # The evaluator will simply use the source_documents returned by the chain.
+        raise RuntimeError(f"QA Chain for '{config_name}' could not be initialized.")
 
     results_data = []
-    for item in test_questions:
+    for item in question_set:
         query = item["question"]
-        # ConversationalRetrievalChain requires 'question' and 'chat_history' keys
-        response = qa_chain.invoke({"question": query, "chat_history": []})
-        
+        try:
+            response = qa_chain.invoke({"question": query, "chat_history": []})
+        except Exception as e:
+            print(f"  [WARN] {config_name} failed on '{query[:40]}...': {e}")
+            response = {"answer": "ERROR", "source_documents": []}
+
         answer = response.get("answer", "")
         source_docs = response.get("source_documents", [])
-        
-        # Contexts are now the documents returned by the (potentially reranked) retriever
-        context = [doc.page_content for doc in source_docs]
+        context = [doc.page_content for doc in source_docs] if source_docs else ["No context"]
 
         results_data.append({
             "config": config_name,
             "question": query,
             "answer": answer,
-            "contexts": context if context else ["No context"],
+            "contexts": context,
             "ground_truth": item["ground_truth"],
-            "f1": calculate_token_f1(answer, item["ground_truth"])
+            "f1": calculate_token_f1(answer, item["ground_truth"]),
         })
 
     # BERTScore
     all_answers = [r["answer"] for r in results_data]
     all_gt = [r["ground_truth"] for r in results_data]
-    # Use distilbert-base-uncased to avoid RobertaTokenizer attribute errors in some transformers versions
-    _, _, F1 = bert_score_func(all_answers, all_gt, model_type="distilbert-base-uncased", lang="en", verbose=False)
-    for i, score in enumerate(F1):
-        results_data[i]["bert_f1"] = score.item()
+    try:
+        _, _, F1 = bert_score_func(all_answers, all_gt,
+                                    model_type="distilbert-base-uncased",
+                                    lang="en", verbose=False)
+        for i, score in enumerate(F1):
+            results_data[i]["bert_f1"] = score.item()
+    except Exception as e:
+        print(f"  [WARN] BERTScore failed: {e}")
+        for r in results_data:
+            r["bert_f1"] = 0.0
 
-    # Ragas
-    llm_obj = load_llm(model_name=config["llm"])
-    embed_model = get_embedding_model(model_name=config["embeddings"])
-    dataset = Dataset.from_dict({
-        "question": [r["question"] for r in results_data],
-        "answer": [r["answer"] for r in results_data],
-        "contexts": [r["contexts"] for r in results_data],
-        "ground_truth": [r["ground_truth"] for r in results_data]
-    })
-    
-    ragas_res = evaluate(
-        dataset, 
-        metrics=[faithfulness, answer_relevancy], 
-        llm=LangchainLLMWrapper(llm_obj), 
-        embeddings=LangchainEmbeddingsWrapper(embed_model)
-    )
-    
-    scores = get_safe_ragas_scores(ragas_res)
-    
-    # --- RESEARCH CONTRIBUTION OPPORTUNITY (Conceptual for now) ---
-    # To evaluate retrieval performance (Precision/Recall/MRR/NDCG),
-    # you would need a more detailed ground_truth dataset that also
-    # specifies which 'contexts' are truly relevant for each question.
-    # For now, you can add placeholders or simple aggregations if you track
-    # individual document scores.
-    # Example: Average relevance score of *all* retrieved docs (before LLM),
-    # then compare with final LLM answer quality.
-    
-    return pd.DataFrame(results_data), scores, ragas_res # RETURN RAGAS_RES OBJECT
+    # RAGAS
+    try:
+        llm_obj = load_llm(
+            model_name=config["llm"],
+            temperature=config.get("temperature", 0.2),
+            max_tokens=config.get("max_tokens", 500),
+        )
+        embed_model = get_embedding_model(
+            model_name=config["embeddings"] or "sentence-transformers/all-mpnet-base-v2"
+        )
+        dataset = Dataset.from_dict({
+            "question": [r["question"] for r in results_data],
+            "answer": [r["answer"] for r in results_data],
+            "contexts": [r["contexts"] for r in results_data],
+            "ground_truth": [r["ground_truth"] for r in results_data],
+        })
+        ragas_res = evaluate(
+            dataset,
+            metrics=[faithfulness, answer_relevancy],
+            llm=LangchainLLMWrapper(llm_obj),
+            embeddings=LangchainEmbeddingsWrapper(embed_model),
+        )
+        scores = get_safe_ragas_scores(ragas_res)
+    except Exception as e:
+        print(f"  [WARN] RAGAS failed for {config_name}: {e}")
+        scores = {"faithfulness": None, "answer_relevancy": None}
+        ragas_res = None
 
-def run_comparative_evaluation():
-    all_detailed_results = [] # Stores (config_name, df_details, ragas_full_obj)
+    return pd.DataFrame(results_data), scores, ragas_res
+
+
+# =============================================================================
+# COMPARATIVE EVALUATION
+# =============================================================================
+
+def run_comparative_evaluation(question_set=None, configs=None):
+    question_set = question_set or PRIMARY_SET
+    configs = configs or list(MODEL_COMBINATIONS.keys())
+
+    all_detailed_results = []
     summary_data = []
 
-    for config_name in MODEL_COMBINATIONS.keys():
-        df_details, ragas_scores_dict, ragas_full_obj = run_evaluation_for_config(config_name)
+    for config_name in configs:
+        df_details, ragas_scores_dict, ragas_full_obj = run_evaluation_for_config(
+            config_name, question_set
+        )
         all_detailed_results.append((config_name, df_details, ragas_full_obj))
-        
+
         summary_row = {
             "Config": config_name,
             "Avg_F1": df_details["f1"].mean(),
             "Avg_BERTScore": df_details["bert_f1"].mean(),
-            **ragas_scores_dict
+            **ragas_scores_dict,
         }
         summary_data.append(summary_row)
 
     comparison_df = pd.concat([item[1] for item in all_detailed_results])
     comparison_df.to_csv("multi_model_comparison_details.csv", index=False)
-    
+
     summary_df = pd.DataFrame(summary_data)
     summary_df.to_csv("multi_model_comparison_summary.csv", index=False)
-    
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 60)
     print("      MULTI-MODEL COMPARISON SUMMARY")
-    print("="*50)
+    print("=" * 60)
     print(summary_df.to_string(index=False))
-    print("="*50)
+    print("=" * 60)
     return summary_df, all_detailed_results
+
+
+# =============================================================================
+# REPORTS & PLOTS
+# =============================================================================
 
 def generate_reports(df, rag_results):
     csv_path = "evaluation_details.csv"
@@ -224,9 +202,8 @@ def generate_reports(df, rag_results):
     report_path = "evaluation_summary.txt"
     avg_f1 = df["f1"].mean()
     avg_bert = df["bert_f1"].mean()
-    
-    avg_ragas = get_safe_ragas_scores(rag_results)
-    
+    avg_ragas = get_safe_ragas_scores(rag_results) if rag_results else {}
+
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("===========================================\n")
         f.write("      LLM DOCTOR RAG EVALUATION REPORT      \n")
@@ -235,48 +212,51 @@ def generate_reports(df, rag_results):
         f.write("-" * 43 + "\n")
         f.write(f"Average Token F1 Score:  {avg_f1:.4f}\n")
         f.write(f"Average BERTScore:       {avg_bert:.4f}\n")
-        
         f.write("\n--- Ragas Metrics (High Level) ---\n")
         for metric, val in avg_ragas.items():
-            f.write(f"{metric:20}: {float(val):.4f}\n")
-            
-        f.write("\n" + "="*43 + "\n")
+            try:
+                f.write(f"{metric:20}: {float(val):.4f}\n")
+            except (TypeError, ValueError):
+                f.write(f"{metric:20}: N/A\n")
+
+        f.write("\n" + "=" * 43 + "\n")
         f.write("   PERFORMANCE HIGHLIGHTS (BERTScore)\n")
-        f.write("="*43 + "\n")
-        
+        f.write("=" * 43 + "\n")
         for i, (_, row) in enumerate(df.nlargest(3, "bert_f1").iterrows(), 1):
             f.write(f"{i}. Question: {row['question']}\n   Score: {row['bert_f1']:.4f}\n\n")
 
     print(f"[2/3] Comprehensive summary report saved: {report_path}")
 
+
 def plot_evaluations(df, rag_results):
     try:
         plt.style.use('seaborn-v0_8')
-    except:
+    except Exception:
         plt.style.use('ggplot')
 
     fig, axes = plt.subplots(1, 3, figsize=(22, 7))
-    avg_ragas = get_safe_ragas_scores(rag_results)
+    avg_ragas = get_safe_ragas_scores(rag_results) if rag_results else {}
 
-    # Plot 1: Performance Distribution
     sns.kdeplot(df["f1"], ax=axes[0], fill=True, label="Token F1", color="royalblue")
     sns.kdeplot(df["bert_f1"], ax=axes[0], fill=True, label="BERTScore", color="seagreen")
     axes[0].set_title("Performance Distribution")
     axes[0].legend()
 
-    # Plot 2: Statistics
     df_melted = df.melt(value_vars=["f1", "bert_f1"], var_name="Metric", value_name="Score")
     sns.boxplot(data=df_melted, x="Metric", y="Score", ax=axes[1], palette="pastel")
     axes[1].set_title("Score Statistics")
     axes[1].set_ylim(0, 1.1)
 
-    # Plot 3: Ragas
     m_names = [n.replace('_', ' ').title() for n in avg_ragas.keys()]
-    m_scores = [float(v) for v in avg_ragas.values()]
+    m_scores = []
+    for v in avg_ragas.values():
+        try:
+            m_scores.append(float(v))
+        except (TypeError, ValueError):
+            m_scores.append(0.0)
     sns.barplot(x=m_names, y=m_scores, ax=axes[2], palette="viridis")
     axes[2].set_title("Overall RAG Quality")
     axes[2].set_ylim(0, 1.1)
-    
     for i, v in enumerate(m_scores):
         axes[2].text(i, v + 0.02, f"{v:.3f}", ha='center', fontweight='bold')
 
@@ -284,44 +264,86 @@ def plot_evaluations(df, rag_results):
     plt.savefig("full_evaluation_plots.png", dpi=300)
     print("[3/3] High-resolution plots saved: full_evaluation_plots.png")
 
+
+# =============================================================================
+# LATEX TABLE EXPORT (auto-fills the paper)
+# =============================================================================
+
+def export_paper_tables(summary_df):
+    """
+    Produce a LaTeX snippet with the main comparison table.
+    Paste this into the paper to replace Table 3.
+    """
+    lines = []
+    lines.append(r"\begin{table}[H]")
+    lines.append(r"\centering")
+    lines.append(r"\small")
+    lines.append(r"\begin{tabular}{|l|c|c|c|c|}")
+    lines.append(r"\hline")
+    lines.append(r"\textbf{Configuration} & \textbf{Avg F1} & \textbf{Avg BERTScore} & \textbf{Faithfulness} & \textbf{Answer Relevancy} \\ \hline")
+    for _, row in summary_df.iterrows():
+        f1 = row.get("Avg_F1", 0.0)
+        bs = row.get("Avg_BERTScore", 0.0)
+        fa = row.get("faithfulness", None)
+        ar = row.get("answer_relevancy", None)
+        fa_str = f"{fa:.4f}" if fa is not None and not pd.isna(fa) else "--"
+        ar_str = f"{ar:.4f}" if ar is not None and not pd.isna(ar) else "--"
+        lines.append(f"{row['Config']} & {f1:.4f} & {bs:.4f} & {fa_str} & {ar_str} \\\\ \\hline")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\caption{Comparison of baselines and four RAG configurations (n=200 samples).}")
+    lines.append(r"\label{tab:comparison_configs}")
+    lines.append(r"\end{table}")
+
+    with open("paper_tables.tex", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("\nLaTeX table snippet saved: paper_tables.tex")
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
 if __name__ == "__main__":
     try:
-        summary_results_df, all_detailed_results = run_comparative_evaluation()
-        
-        # Identify the detailed results for "Setup_Model4" to generate its specific reports
+        # Step 1: run the full comparative evaluation
+        summary_results_df, all_detailed_results = run_comparative_evaluation(
+            question_set=PRIMARY_SET,
+            configs=list(MODEL_COMBINATIONS.keys()),
+        )
+
+        # Step 2: extract Model 4 detailed results for its own reports
         model4_config_name = "Setup_Model4"
         model4_detailed_df = None
-        model4_ragas_results_obj = None
-
+        model4_ragas_obj = None
         for config_name, df, ragas_obj in all_detailed_results:
             if config_name == model4_config_name:
                 model4_detailed_df = df
-                model4_ragas_results_obj = ragas_obj
+                model4_ragas_obj = ragas_obj
                 break
-        
-        if model4_detailed_df is not None and model4_ragas_results_obj is not None:
-            print(f"\n--- Generating main reports for '{model4_config_name}' (Model 4) ---")
-            generate_reports(model4_detailed_df, model4_ragas_results_obj)
-            plot_evaluations(model4_detailed_df, model4_ragas_results_obj)
-        else:
-            print(f"\nWarning: Could not find detailed results for '{model4_config_name}'. Skipping main reports.")
 
+        if model4_detailed_df is not None:
+            print(f"\n--- Generating main reports for '{model4_config_name}' ---")
+            generate_reports(model4_detailed_df, model4_ragas_obj)
+            plot_evaluations(model4_detailed_df, model4_ragas_obj)
 
-        # Plot side-by-side comparison for ALL models
-        plt.figure(figsize=(12, 6))
+        # Step 3: comparative bar chart
+        plt.figure(figsize=(14, 7))
         metrics_to_plot = ["Avg_F1", "Avg_BERTScore", "faithfulness", "answer_relevancy"]
-        plot_df = summary_results_df.melt(id_vars="Config", value_vars=metrics_to_plot, var_name="Metric", value_name="Score")
-        
+        plot_df = summary_results_df.melt(id_vars="Config", value_vars=metrics_to_plot,
+                                          var_name="Metric", value_name="Score")
         sns.barplot(data=plot_df, x="Metric", y="Score", hue="Config")
-        plt.title("Comparative Performance Across Model Configurations")
+        plt.title("Comparative Performance Across Configurations")
         plt.ylim(0, 1.1)
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
-        plt.savefig("model_comparison_chart.png")
-        
+        plt.savefig("model_comparison_chart.png", dpi=300)
         print("\nComparative chart saved: model_comparison_chart.png")
-        print("Detailed logs saved: multi_model_comparison_details.csv")
+
+        # Step 4: export LaTeX table
+        export_paper_tables(summary_results_df)
+
         print("\nPIPELINE FINISHED SUCCESSFULLY")
+
     except Exception as e:
         print(f"\nEvaluation failed: {e}")
         import traceback
